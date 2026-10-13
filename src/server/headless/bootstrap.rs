@@ -51,6 +51,28 @@ pub fn run_server() -> io::Result<()> {
         Err(err) => return Err(err),
     };
 
+    // Socket binding only proves this socket path is free. The persisted
+    // session lives in the data directory, which a socket override does not
+    // move, so take ownership of it before restoring anything from it.
+    let _data_dir_lock = match crate::server::data_dir_lock::try_acquire(&crate::session::data_dir())
+    {
+        Ok(lock) => lock,
+        Err(err @ crate::server::data_dir_lock::DataDirLockError::Held { .. }) => {
+            // Release the socket this process already bound; `exit` skips drops.
+            drop(_api_server);
+            eprintln!("error: {err}");
+            eprintln!(
+                "that server keeps its own sockets; this one would restore its session and overwrite it."
+            );
+            eprintln!(
+                "stop the other server, or start a separate session with `herdr --session <name>`."
+            );
+            std::process::exit(1);
+        }
+        Err(crate::server::data_dir_lock::DataDirLockError::Io(err)) => return Err(err),
+    };
+    info!(path = %_data_dir_lock.path().display(), "server owns session data directory");
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -131,6 +153,9 @@ fn take_startup_cwd() -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
+const HANDOFF_DATA_DIR_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(unix)]
 fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> {
     let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
@@ -195,6 +220,19 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             .set(received.manifest.host_shutdown_intent);
         crate::server::handoff::report_ready(&mut received.stream)?;
         crate::server::handoff::wait_committed(&mut received.stream)?;
+        // The old server stops persisting once it commits and exits shortly
+        // after, releasing its data directory lock. Ownership of the panes has
+        // already moved here, so a slow exit is logged rather than fatal.
+        let data_dir_lock = match crate::server::data_dir_lock::acquire_within(
+            &crate::session::data_dir(),
+            HANDOFF_DATA_DIR_LOCK_TIMEOUT,
+        ) {
+            Ok(lock) => Some(lock),
+            Err(err) => {
+                warn!(err = %err, "handoff import server could not take the session data directory lock; continuing");
+                None
+            }
+        };
         server.app.assume_handoff_ownership();
         server.app.unpause_handoff_readers();
         server.pending_handoff_repaint_nudge = true;
@@ -204,7 +242,9 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         info!("handoff import server started");
         print_ready_message(&api::socket_path(), &client_socket_path());
         server.app.run_plugin_startup_hooks();
-        server.run().await
+        let result = server.run().await;
+        drop(data_dir_lock);
+        result
     });
 
     rt.shutdown_timeout(Duration::from_millis(100));

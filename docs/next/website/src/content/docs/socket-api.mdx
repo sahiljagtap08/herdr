@@ -649,6 +649,13 @@ Resolution order:
 
 Use `HERDR_SOCKET_PATH` only for low-level overrides.
 
+`HERDR_SOCKET_PATH` moves the sockets, not the session. A server started with
+it still reads and writes the `session.json` of the default or `HERDR_SESSION`
+session. The server holds a `server.lock` file in that session directory while
+it runs, so a second server pointed at the same session with a different
+socket path refuses to start instead of restoring and overwriting the running
+session. Use `--session <name>` or `HERDR_SESSION` for a separate session.
+
 For plugins, prefer invoking `HERDR_BIN_PATH` and the CLI wrappers when you need
 portable Windows behavior. Raw socket clients are responsible for using the
 platform-native local socket form.
