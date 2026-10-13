@@ -249,6 +249,9 @@ pub(crate) fn build_worktree_add_new_branch_command(
         "add".to_string(),
         "-b".to_string(),
         branch.to_string(),
+        // `base` is caller input; `--` keeps an option-shaped value such as
+        // `--orphan` from being parsed as a flag and silently replacing it.
+        "--".to_string(),
         path.display().to_string(),
         base.to_string(),
     ]);
@@ -268,6 +271,7 @@ pub(crate) fn build_worktree_add_existing_branch_command(
     args.extend([
         "worktree".to_string(),
         "add".to_string(),
+        "--".to_string(),
         path.display().to_string(),
         branch.to_string(),
     ]);
@@ -958,6 +962,7 @@ prunable stale
                 "add",
                 "-b",
                 "worktree/brave-river",
+                "--",
                 "/w/herdr/worktree-brave-river",
                 "HEAD"
             ]
@@ -980,6 +985,7 @@ prunable stale
                 "/repo/herdr",
                 "worktree",
                 "add",
+                "--",
                 "/w/herdr/worktree-brave-river",
                 "worktree/brave-river"
             ]
@@ -1011,6 +1017,24 @@ prunable stale
         let remove = build_worktree_remove_command(&repo, &checkout, false, false);
         run_worktree_command(&remove).unwrap();
         assert!(!checkout.exists());
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn option_shaped_base_is_rejected_instead_of_changing_the_add_command() {
+        let repo = create_committed_repo("worktree-option-base-repo");
+        let checkout = unique_temp_path("worktree-option-base-checkout");
+        let branch = "worktree/option-base";
+
+        // Without the separator git consumed `--orphan` as a flag, reported
+        // success, and left an empty orphan checkout with no commits.
+        let add =
+            build_worktree_add_new_branch_command(&repo, &checkout, branch, "--orphan", false);
+        let error = run_worktree_command(&add).unwrap_err();
+        assert!(error.contains("--orphan"), "{error}");
+        assert!(!checkout.exists());
+        assert!(!local_branch_exists(&repo, branch, false).unwrap());
 
         let _ = std::fs::remove_dir_all(repo);
     }
